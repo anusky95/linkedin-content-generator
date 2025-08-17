@@ -3,3 +3,4 @@ openai
 requests
 pandas
 youtube-transcript-api
+python-dotenv
