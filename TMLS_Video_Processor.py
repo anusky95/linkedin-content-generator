@@ -866,7 +866,13 @@ def main():
                     
                     else:
                         st.error("❌ Image conversion failed. Here's the HTML version:")
-                        st.components.v1.html(workflow_html, height=1300, scrolling=False)
+                        st.components.v1.html(workflow_html, height=1200, scrolling=False)
+                        st.download_button(
+                            label="📥 Download HTML File",
+                            data=workflow_html.encode('utf-8'),
+                            file_name=f"workflow_{video_id}.html",
+                            mime="text/html"
+                        )
     
     # Instructions
     if not video_url:
