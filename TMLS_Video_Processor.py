@@ -7,6 +7,7 @@ import json
 import re
 import os
 from openai import OpenAI
+from html2image import Html2Image
 from urllib.parse import urlparse, parse_qs
 
 # ---- CONFIGURATION ----
@@ -655,6 +656,24 @@ Output only the complete HTML code starting with <!DOCTYPE html>
     except Exception as e:
         return f"Error generating workflow: {str(e)}"
 
+def html_to_image_simple(html_content):
+    """Convert HTML to image using html2image"""
+    try:
+        hti = Html2Image(size=(1200, 1200))
+        
+        # Generate image from HTML string
+        image_path = hti.screenshot(
+            html_str=html_content,
+            save_as='infographic.png'
+        )
+        
+        with open('infographic.png', 'rb') as f:
+            return f.read()
+            
+    except Exception as e:
+        return None
+
+
 # ---- MAIN GENERATION FUNCTION ----
 
 def generate_all_template_posts(video_content, video_url):
@@ -815,25 +834,39 @@ def main():
                 
                 if "Error generating" not in workflow_html:
                     st.markdown("### 🎯 Your Interactive Workflow")
-                    st.success("✅ Workflow generated! You can copy the HTML code below:")
+                    st.success("✅ Workflow generated!")
+                    st.success("✅ Infographic generated! Converting to image...")
                     
+                     # Convert HTML to image
+                    with st.spinner("🖼️ Creating PNG image..."):
+                        image_data = html_to_image_simple(workflow_html)
+                    if image_data:
+                        # Display the image
+                        st.image(image_data, caption="LinkedIn-ready infographic (1200x1200px)")
+                        
+                        # Download button for image
+                        st.download_button(
+                            label="📥 Download PNG Image",
+                            data=image_data,
+                            file_name="linkedin_infographic.png",
+                            mime="image/png"
+                        )
+                        
+                        st.success("🎉 Perfect! Your infographic is ready for LinkedIn!")
                     # Display the HTML
                     # st.components.v1.html(workflow_html, height=600, scrolling=True)
-                    st.components.v1.html(workflow_html, height=1500, scrolling=True)
-                    # Provide download option
-                    st.download_button(
-                        label="📥 Download HTML File",
-                        data=workflow_html.encode('utf-8'),
-                        file_name=f"workflow_{video_id}.html",
-                        mime="text/html"
-                    )
+                    # st.components.v1.html(workflow_html, height=1500, scrolling=True)
+                    # # Provide download option
+                    # st.download_button(
+                    #     label="📥 Download HTML File",
+                    #     data=workflow_html.encode('utf-8'),
+                    #     file_name=f"workflow_{video_id}.html",
+                    #     mime="text/html"
+                    # )
                     
-                    # Show code for copying
-                    with st.expander("📝 View/Copy HTML Code"):
-                        st.code(workflow_html, language='html')
-                        
-                else:
-                    st.error(workflow_html)
+                    else:
+                        st.error("❌ Image conversion failed. Here's the HTML version:")
+                        st.components.v1.html(workflow_html, height=1300, scrolling=False)
     
     # Instructions
     if not video_url:
