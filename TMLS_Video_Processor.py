@@ -866,7 +866,7 @@ def main():
                     
                     else:
                         st.error("❌ Image conversion failed. Here's the HTML version:")
-                        st.components.v1.html(workflow_html, height=1200, scrolling=False)
+                        st.components.v1.html(workflow_html, height=1200, scrolling=True)
                         st.download_button(
                             label="📥 Download HTML File",
                             data=workflow_html.encode('utf-8'),
