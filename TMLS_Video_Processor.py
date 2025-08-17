@@ -851,6 +851,13 @@ def main():
         - **Strategic pinned comment** with bonus content
         - **Optimized hashtags** for maximum reach
         - **Engagement tips** for each template style
+        
+        #### 🎨 Workflow Diagram Tab:
+        - **Professional workflow diagrams** (1200x1200px LinkedIn-optimized)
+        - **Technical process visualizations** perfect for sharing
+        - **Modern AI/ML aesthetic** with clean, professional design
+        - **Screenshot-ready infographics** that explain complex concepts visually
+        - **Perfect for technical content creators** and conference speakers
         """)
 
 # ---- RUN APPLICATION ----
