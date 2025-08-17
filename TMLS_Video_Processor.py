@@ -1,5 +1,5 @@
 import streamlit as st
-from youtube_transcript_api import YouTubeTranscriptApi
+from googleapiclient.discovery import build
 import openai
 import numpy as np
 import json
@@ -14,7 +14,6 @@ load_dotenv()  # Load from .env file if exists
 
 client = OpenAI(api_key=os.environ["OPENAI_API_KEY"])
 print(client)
-# openai_api_key=os.getenv("OPENAI_API_KEY")
 
 # ---- UTILITY FUNCTIONS ----
 
@@ -94,10 +93,10 @@ def load_embedded_chunks(video_id):
             st.error(f"Embedding file not found: {e}")
             st.stop()
 
-def create_and_save_embeddings(video_id, transcript, chunk_duration=30):
-    """Create larger chunks and generate embeddings."""
-    # Create larger chunks
-    larger_chunks = create_larger_chunks(transcript, chunk_duration)
+def create_and_save_embeddings(video_id, video_content, chunk_duration=30):
+    """Create larger chunks and generate embeddings from video content."""
+    # Since we have video description instead of transcript, create chunks differently
+    larger_chunks = create_content_chunks(video_content, chunk_duration)
     
     # Generate embeddings for each chunk
     embedded_chunks = []
@@ -117,53 +116,91 @@ def create_and_save_embeddings(video_id, transcript, chunk_duration=30):
     
     return embedded_chunks
 
-# ---- TRANSCRIPT FUNCTIONS ----
+# ---- YOUTUBE API FUNCTIONS ----
 
-def fetch_transcript(video_id):
-    """Fetch transcript for a YouTube video."""
+def get_youtube_content(youtube_url):
+    """Get YouTube video title and description using YouTube Data API"""
     try:
-        ytt_api = YouTubeTranscriptApi()
-        transcript = ytt_api.fetch(video_id)
-        return transcript
+        # Extract video ID
+        video_id = get_youtube_id(youtube_url)
+        if not video_id:
+            st.error("Could not extract video ID from URL")
+            return None, None, None, None
+        
+        # Build YouTube API client
+        youtube = build('youtube', 'v3', developerKey=os.getenv("YOUTUBE_API_KEY"))
+        
+        # Get video details
+        video_response = youtube.videos().list(
+            part='snippet,statistics',
+            id=video_id
+        ).execute()
+        
+        if not video_response['items']:
+            st.error("Video not found or is private")
+            return None, None, None, None
+        
+        # Extract data
+        snippet = video_response['items'][0]['snippet']
+        stats = video_response['items'][0].get('statistics', {})
+        
+        title = snippet['title']
+        description = snippet['description']
+        channel = snippet['channelTitle']
+        published = snippet['publishedAt']
+        view_count = stats.get('viewCount', 'N/A')
+        
+        # Create structured content
+        video_content = {
+            'title': title,
+            'description': description,
+            'channel': channel,
+            'published': published,
+            'view_count': view_count,
+            'full_text': f"Title: {title}\n\nChannel: {channel}\n\nDescription: {description}"
+        }
+        
+        return video_id, video_content, title, channel
+        
     except Exception as e:
-        st.error(f"Transcript not found: {e}")
-        st.stop()
+        st.error(f"Error fetching YouTube data: {str(e)}")
+        return None, None, None, None
 
-def prepare_transcript_chunks(transcript):
-    """Convert transcript segments into chunks with timestamps."""
-    return [(seg.start, seg.start + seg.duration, seg.text) for seg in transcript]
+# ---- CONTENT PROCESSING FUNCTIONS ----
 
-def create_larger_chunks(transcript, chunk_duration=30):
-    """Create larger, more meaningful chunks for better context."""
+def create_content_chunks(video_content, chunk_duration=30):
+    """Create chunks from video content (title + description)."""
+    full_text = video_content['full_text']
+    
+    # Split description into sentences for better chunking
+    sentences = re.split(r'[.!?]+', full_text)
+    
     chunks = []
-    current_chunk = {"start": None, "end": None, "text": "", "segments": []}
+    current_chunk = {"start": 0, "end": 0, "text": ""}
+    chunk_count = 0
     
-    for seg in transcript:
-        if current_chunk["start"] is None:
-            current_chunk["start"] = seg.start
-        
-        current_chunk["text"] += " " + seg.text
-        current_chunk["end"] = seg.start + seg.duration
-        current_chunk["segments"].append(seg)
-        
-        # Create chunk when we reach target duration or significant pause
-        if (current_chunk["end"] - current_chunk["start"] >= chunk_duration or 
-            len(current_chunk["text"].split()) >= 100):  # or 100 words
+    for i, sentence in enumerate(sentences):
+        sentence = sentence.strip()
+        if not sentence:
+            continue
             
-            chunks.append({
-                "start": current_chunk["start"],
-                "end": current_chunk["end"], 
-                "text": current_chunk["text"].strip()
-            })
-            current_chunk = {"start": None, "end": None, "text": "", "segments": []}
-    
-    # Add final chunk if it has content
-    if current_chunk["text"].strip():
-        chunks.append({
-            "start": current_chunk["start"],
-            "end": current_chunk["end"], 
-            "text": current_chunk["text"].strip()
-        })
+        current_chunk["text"] += " " + sentence
+        current_chunk["end"] = chunk_count * chunk_duration + chunk_duration
+        
+        # Create chunk when we reach reasonable length
+        if len(current_chunk["text"].split()) >= 50 or i == len(sentences) - 1:
+            if current_chunk["text"].strip():
+                chunks.append({
+                    "start": current_chunk["start"],
+                    "end": current_chunk["end"], 
+                    "text": current_chunk["text"].strip()
+                })
+                chunk_count += 1
+                current_chunk = {
+                    "start": chunk_count * chunk_duration, 
+                    "end": 0, 
+                    "text": ""
+                }
     
     return chunks
 
@@ -188,7 +225,7 @@ def create_context_from_chunks(top_chunks):
     """Create context string from top similarity chunks."""
     context_parts = []
     for _, chunk in top_chunks:
-        timestamp_range = f"[{chunk['start']:.2f}-{chunk['end']:.2f}]"
+        timestamp_range = f"[Section {chunk['start']:.0f}-{chunk['end']:.0f}]"
         context_parts.append(f"{timestamp_range} {chunk['text']}")
     return "\n".join(context_parts)
 
@@ -197,7 +234,7 @@ def create_context_from_chunks(top_chunks):
 def generate_answer(question, context):
     """Generate answer using LLM with the given context."""
     llm_prompt = f"""
-You are an expert assistant. Answer the question using ONLY the following context (video transcript chunks).
+You are an expert assistant. Answer the question using ONLY the following context (video content).
 
 Question: {question}
 
@@ -214,14 +251,13 @@ Answer:
     )
     return response.choices[0].message.content
 
-def generate_social_media_post(full_transcript, video_url):
-    """Generate a LinkedIn-style social media post from the full video transcript."""
+def generate_social_media_post(video_content, video_url):
+    """Generate a LinkedIn-style social media post from the video content."""
     
-    # Combine all transcript text
-    full_text = " ".join([segment.text for segment in full_transcript])
+    full_text = video_content['full_text']
     
     social_media_prompt = f"""
-Given the following transcript of a conference session, write a LinkedIn post in this style:
+Given the following video information, write a LinkedIn post in this style:
 ---
 What if your next model training loop could run 100B-parameter LLMs without wrestling separate stacks for training and inference, and without vendor lock-in? 
 This is what we covered during this session.
@@ -235,10 +271,12 @@ Presentation Highlights
 • [bullet 3]
 ...
 ---
-Please extract the main problem or question the session addresses and phrase it as a bold, open-ended hook in the first line. Then summarize the main themes or solutions discussed in 5–6 short bullet points (Presentation Highlights), written for LinkedIn. 
+Please extract the main problem or question the video addresses and phrase it as a bold, open-ended hook in the first line. Then summarize the main themes or solutions discussed in 5–6 short bullet points (Presentation Highlights), written for LinkedIn. 
 At the end, include 'See vid and blog post here: ➡️ {video_url}' and add 'MLOps World | GenAI Summit'.
 
-Here is the transcript:
+Video Title: {video_content['title']}
+Channel: {video_content['channel']}
+Video Content:
 {full_text}
 """
     
@@ -248,26 +286,24 @@ Here is the transcript:
     )
     return response.choices[0].message.content
 
-def generate_detailed_summary(full_transcript, video_url):
-    """Generate a comprehensive detailed summary from the full video transcript."""
+def generate_detailed_summary(video_content, video_url):
+    """Generate a comprehensive detailed summary from the video content."""
     
-    # Combine all transcript text
-    full_text = " ".join([segment.text for segment in full_transcript])
+    full_text = video_content['full_text']
     
     detailed_summary_prompt = f"""
-Create a comprehensive summary of this video presentation following this structure:
+Create a comprehensive summary of this video following this structure:
 
 ## Summary
 Write a detailed 3-4 paragraph overview that covers:
-- The presenter and their background/company
-- The main topic and context of the presentation
-- Key techniques, methodologies, or approaches discussed
-- Business applications and real-world examples
-- Technical infrastructure and implementation details
+- The presenter/channel: {video_content['channel']}
+- The main topic: {video_content['title']}
+- Key themes and approaches discussed based on the description
+- Potential business applications and value
 - Conclusion and takeaways for the audience
 
 ## Highlights
-Create 7-10 bullet points with emojis that capture the most important takeaways, using this format:
+Create 7-10 bullet points with emojis that capture the most important takeaways from the video description:
 🚀 [Key insight or technique]
 🎯 [Important concept or method]
 🐍 [Technical detail or tool]
@@ -283,9 +319,15 @@ Write 5-7 detailed insights with descriptive headings and emoji, each containing
 ## Conclusion
 Write a thoughtful 2-3 sentence conclusion that ties everything together and emphasizes the practical value for viewers.
 
-Please make the summary comprehensive, professional, and valuable for someone who wants to understand the core concepts without watching the entire video.
+Please make the summary comprehensive, professional, and valuable for someone who wants to understand the core concepts.
 
-Here is the transcript:
+Video Information:
+Title: {video_content['title']}
+Channel: {video_content['channel']}
+Published: {video_content['published']}
+Views: {video_content['view_count']}
+
+Content:
 {full_text}
 """
     
@@ -315,12 +357,11 @@ def display_detailed_summary(summary_content):
     st.info("This comprehensive summary covers all key points from the video!")
 
 def display_source_timestamps(top_chunks):
-    """Display source timestamps with links."""
-    st.markdown("### ⏰ Source Timestamps")
+    """Display source sections."""
+    st.markdown("### ⏰ Source Sections")
     for _, chunk in top_chunks:
-        timestamp = format_timestamp(chunk['start'])
-        st.write(f"From [{timestamp}] — {chunk['text']}")
-    st.info("Jump to those times in the video for details!")
+        st.write(f"Section — {chunk['text'][:200]}...")
+    st.info("These are the most relevant sections from the video content!")
 
 # ---- MAIN APPLICATION ----
 
@@ -339,74 +380,69 @@ def main():
         
         # Add chunk analysis button
         if st.button("🔍 Analyze Current Chunks") and video_url:
-            video_id = get_youtube_id(video_url)
-            analyze_chunk_sizes(video_id)
+            video_id, video_content, title, channel = get_youtube_content(video_url)
+            if video_id:
+                analyze_chunk_sizes(video_id)
         
         # Add regenerate embeddings button
-        if st.button("🔄 Regenerate Large Chunks") and video_url:
-            video_id = get_youtube_id(video_url)
-            with st.spinner("Fetching transcript..."):
-                transcript = fetch_transcript(video_id)
-            with st.spinner("Creating larger chunks and embeddings..."):
-                embedded_chunks = create_and_save_embeddings(video_id, transcript, chunk_duration=30)
-            st.success(f"✅ Created {len(embedded_chunks)} larger chunks! Now try asking your question again.")
+        if st.button("🔄 Generate Content Chunks") and video_url:
+            video_id, video_content, title, channel = get_youtube_content(video_url)
+            if video_content:
+                with st.spinner("Creating content chunks and embeddings..."):
+                    embedded_chunks = create_and_save_embeddings(video_id, video_content, chunk_duration=30)
+                st.success(f"✅ Created {len(embedded_chunks)} content chunks! Now try asking your question again.")
         
         if st.button("Get Answer") and video_url and question:
-            # Extract video ID
-            video_id = get_youtube_id(video_url)
+            # Get video content
+            video_id, video_content, title, channel = get_youtube_content(video_url)
             
-            # Fetch transcript
-            with st.spinner("Fetching transcript..."):
-                transcript = fetch_transcript(video_id)
-            
-            # Load pre-computed embeddings
-            with st.spinner("Loading embeddings..."):
-                embedded_chunks = load_embedded_chunks(video_id)
-            
-            # Perform similarity search
-            with st.spinner("Searching for relevant content..."):
-                top_chunks = perform_similarity_search(question, embedded_chunks)
-                context = create_context_from_chunks(top_chunks)
-            
-            # Generate answer
-            with st.spinner("Generating answer..."):
-                answer = generate_answer(question, context)
-            
-            # Display results
-            display_answer(answer)
-            display_source_timestamps(top_chunks)
+            if video_content:
+                # Load pre-computed embeddings or create new ones
+                with st.spinner("Loading embeddings..."):
+                    try:
+                        embedded_chunks = load_embedded_chunks(video_id)
+                    except:
+                        st.info("Creating new embeddings from video content...")
+                        embedded_chunks = create_and_save_embeddings(video_id, video_content)
+                
+                # Perform similarity search
+                with st.spinner("Searching for relevant content..."):
+                    top_chunks = perform_similarity_search(question, embedded_chunks)
+                    context = create_context_from_chunks(top_chunks)
+                
+                # Generate answer
+                with st.spinner("Generating answer..."):
+                    answer = generate_answer(question, context)
+                
+                # Display results
+                display_answer(answer)
+                display_source_timestamps(top_chunks)
     
     with tab2:
         if st.button("Generate LinkedIn Post") and video_url:
-            # Extract video ID
-            video_id = get_youtube_id(video_url)
+            # Get video content
+            video_id, video_content, title, channel = get_youtube_content(video_url)
             
-            # Fetch transcript
-            with st.spinner("Fetching full transcript..."):
-                transcript = fetch_transcript(video_id)
-            
-            # Generate social media post
-            with st.spinner("Generating LinkedIn post..."):
-                social_post = generate_social_media_post(transcript, video_url)
-            
-            # Display social media post
-            display_social_media_post(social_post)
+            if video_content:
+                # Generate social media post
+                with st.spinner("Generating LinkedIn post..."):
+                    social_post = generate_social_media_post(video_content, video_url)
+                
+                # Display social media post
+                display_social_media_post(social_post)
     
     with tab3:
         if st.button("Generate Detailed Summary") and video_url:
-            # Extract video ID
-            video_id = get_youtube_id(video_url)
+            # Get video content
+            video_id, video_content, title, channel = get_youtube_content(video_url)
             
-            # Fetch transcript
-            with st.spinner("Fetching full transcript..."):
-                transcript = fetch_transcript(video_id)
-            
-            # Generate detailed summary
-            with st.spinner("Generating comprehensive summary..."):
-                detailed_summary = generate_detailed_summary(transcript, video_url)
-            
-            # Display detailed summary
-            display_detailed_summary(detailed_summary)
+            if video_content:
+                # Generate detailed summary
+                with st.spinner("Generating comprehensive summary..."):
+                    detailed_summary = generate_detailed_summary(video_content, video_url)
+                
+                # Display detailed summary
+                display_detailed_summary(detailed_summary)
 
 # ---- RUN APPLICATION ----
 if __name__ == "__main__":
