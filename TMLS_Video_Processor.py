@@ -819,7 +819,7 @@ def main():
                     
                     # Display the HTML
                     # st.components.v1.html(workflow_html, height=600, scrolling=True)
-                    st.components.v1.html(workflow_html, height=1300, scrolling=False)
+                    st.components.v1.html(workflow_html, height=1500, scrolling=True)
                     # Provide download option
                     st.download_button(
                         label="📥 Download HTML File",
