@@ -818,12 +818,12 @@ def main():
                     st.success("✅ Workflow generated! You can copy the HTML code below:")
                     
                     # Display the HTML
-                    st.components.v1.html(workflow_html, height=600, scrolling=True)
+                    # st.components.v1.html(workflow_html, height=600, scrolling=True)
                     st.components.v1.html(workflow_html, height=1300, scrolling=False)
                     # Provide download option
                     st.download_button(
                         label="📥 Download HTML File",
-                        data=workflow_html,
+                        data=workflow_html.encode('utf-8'),
                         file_name=f"workflow_{video_id}.html",
                         mime="text/html"
                     )
@@ -856,3 +856,4 @@ def main():
 # ---- RUN APPLICATION ----
 if __name__ == "__main__":
     main()
+    
